@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="46a66a1a-62fb-4e60-8290-e32e65b21de1" name="Server">
+        <fileTransfer accessType="SFTP" host="twinpi-mini" port="22" sshConfigId="2a514962-48de-4e46-b726-7d49b8db25c0" sshConfig="magictwin@twinpi-mini:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
