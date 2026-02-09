@@ -5,7 +5,7 @@ import smbus2
 
 # I2C address of the VL53L0X
 ADDR = 0x29
-
+booptriger = 0
 bus = smbus2.SMBus(1)
 
 def write_reg(address, value):
@@ -25,13 +25,20 @@ def read_range():
     return (hi << 8) | lo
 
 def main():
+    global booptriger
     print("VL53L0X starting (smbus mode)...")
     while True:
         try:
             distance = read_range()
-
             if distance != 20 and distance <= 500:
                 print(f"Distance: {distance} mm")
+                booptriger = booptriger + 1
+            else:
+                booptriger = 0
+
+            if booptriger >= 5:
+                print(f"Boop")
+                booptriger = 0
             time.sleep(0.2)
         except KeyboardInterrupt:
             print("\nExiting.")

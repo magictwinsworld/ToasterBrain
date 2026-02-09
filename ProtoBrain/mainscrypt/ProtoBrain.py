@@ -2,14 +2,21 @@
 # my_app.py
 import os
 import collections
+import sys
 import threading
 import json
 import requests
 import time
 import traceback
 import random
+import sys
+
+#bluetooth
+import serial
+
 from typing import List, Dict, Any, Tuple
 from samplebase import SampleBase
+# noinspection PyUnresolvedReferences
 from rgbmatrix import RGBMatrixOptions, RGBMatrixOptions, graphics
 
 # AutoControll
@@ -19,6 +26,26 @@ import numpy as np
 # InsideScreen
 import smbus2
 import time
+
+
+import contextlib
+
+@contextlib.contextmanager
+def ignore_stderr():
+    """Context manager to suppress console noise from ALSA/PyAudio."""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    old_stderr = os.dup(2)
+    sys.stderr.flush()
+    os.dup2(devnull, 2)
+    os.close(devnull)
+    try:
+        yield
+    finally:
+        os.dup2(old_stderr, 2)
+        os.close(old_stderr)
+
+
+# Booptriger
 
 # --- THREAD LOCK DEFINITION ---
 # We use RLock (Reentrant Lock) so the same thread can acquire it multiple times without blocking itself
@@ -40,9 +67,16 @@ CHUNK = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 44100
-audio = pyaudio.PyAudio()
+
+with ignore_stderr():
+    audio = pyaudio.PyAudio()
 
 bus = smbus2.SMBus(1)
+
+
+# --- BLUETOOTH CONFIG ---
+BT_SERIAL_PORT = "/dev/rfcomm0"  # Default for paired BT serial devices
+BT_BAUD_RATE = 9600
 
 
 def lcd_toggle_enable(bits):
@@ -157,6 +191,17 @@ def lcd_insidescreen_controll(message, typelcdupdate):
                 else:
                     lcd_display_string("m")
 
+            elif typelcdupdate == "Boop":
+                lcd_set_cursor(1, 13)
+                if message == "BoopOn":
+                    lcd_display_string("3")
+                elif message == "BoopDisabled":
+                    lcd_display_string("X")
+                else:
+                    lcd_display_string("-")
+
+
+
         except OSError as e:
             # Catch the specific I/O error (Errno 5) so the app doesn't crash
             print(f"LCD I/O Error detected (ignoring): {e}")
@@ -188,21 +233,24 @@ else:
     print("Using device:", audio.get_device_info_by_index(device_index)["name"])
 
 try:
-    stream = audio.open(
-        format=FORMAT,
-        channels=CHANNELS,
-        rate=RATE,
-        input=True,
-        input_device_index=device_index,
-        frames_per_buffer=CHUNK
-    )
+    with ignore_stderr():  # Wrap the stream opening too
+        stream = audio.open(
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=RATE,
+            input=True,
+            input_device_index=device_index,
+            frames_per_buffer=CHUNK
+        )
 except:
+    stream = None
     print("USB microphone not found!")
 
 print("Listening...")
 
 # --- CONFIGURATION ---
-QUEUE_URL = "https://magictwin.net/proto/Data/Public-Queue?key=ToasterControl_LockedData30590325246954&istwinpi=1"
+QUEUE_URL = "https://magictwin.net/proto/Data/Public-Queue?key=ToasterControl_LockedData30590325246954"
+QUEUE_URL = QUEUE_URL + "&istwinpi=1"
 
 MarkeAllisDOne = 1
 if MarkeAllisDOne:
@@ -250,6 +298,10 @@ def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
 class MyMatrixApp(SampleBase):
     def __init__(self, *args, **kwargs):
         super(MyMatrixApp, self).__init__(*args, **kwargs)
+
+        base_dir = os.path.abspath(os.path.dirname(__file__))
+        self.state_file = os.path.join(base_dir, "last_state.json")
+
 
         self.stop_event = threading.Event()
         self.timer = None
@@ -307,13 +359,17 @@ class MyMatrixApp(SampleBase):
         self.blinkingtoggle = True
         self.mouthtoggle = True
         self.ismouthopen = False
+        self.booptoggle = True
         self.mouthVolume = 10
         self.voicethreshhold = 4
 
         self.blink_map = {
             "Tired_Eyes.json": "Tired_Blink.json",
             "Angry_Eyes.json": "Angry_Blink.json",
+            "Happy_Eyes.json": "Happy_Blink.json",
+            "Sad_Eyes.json": "Sad_Blink.json",
             "Love_Eyes.json": "NoBlink",
+            "Love_Eyes_Blink.json": "NoBlink",
             "O_Eyes.json": "NoBlink",
             "U_Eyes.json": "NoBlink",
             "X_Eyes.json": "NoBlink",
@@ -333,7 +389,7 @@ class MyMatrixApp(SampleBase):
 
         self.current_eyes_grid = []
         self.current_mouth_grid = []
-        self.current_eyes_name = "U_Eyes.json"
+        self.current_eyes_name = self.load_saved_eyes_name()
         self.current_mouth_name = "Mouth_Close.json"
         self.current_mouth_open_name = "Mouth_Open.json"  # Storing the open mouth file name
 
@@ -354,8 +410,125 @@ class MyMatrixApp(SampleBase):
         except:
             print("LCD INIT failed.")
 
+        # Bluetooth Thread Setup
+        self.bt_thread = threading.Thread(target=self.listen_bluetooth, daemon=True)
+        self.bt_thread.start()
+
+        # Boop Logic Variables
+        self.boop_lockout_time = 0  # Timestamp for when we can boop again
+        self.boop_duration = 3.0  # How long heart eyes stay (seconds)
+        self.boop_cooldown = 2.0  # Cooldown before next boop (seconds)
+        self.boop_active_until = 0  # Timestamp for when heart eyes revert
+        self.is_booped = False
+        self.pending_boop_trigger = False # Flag to signal main loop
+        self.pre_boop_eyes = "U_Eyes.json" # Memory of eye state before boop
+
+        # Start Boop Thread
+        self.boop_thread = threading.Thread(target=self.monitor_boop_sensor, daemon=True)
+        self.boop_thread.start()
+
+    def monitor_boop_sensor(self):
+        """Background thread to monitor the VL53L0X sensor."""
+        VL_ADDR = 0x29
+        consecutive_hits = 0
+
+        print("Boop Thread: VL53L0X Monitoring started.")
+
+        while not self.stop_event.is_set():
+            if not self.booptoggle:
+                time.sleep(0.5)
+                continue
+
+            try:
+                # Use the existing LCD lock to prevent I2C collisions
+                with lcd_lock:
+                    # Trigger measurement
+                    bus.write_byte_data(VL_ADDR, 0x00, 0x01)
+                    time.sleep(0.05)
+                    hi = bus.read_byte_data(VL_ADDR, 0x1E)
+                    lo = bus.read_byte_data(VL_ADDR, 0x1F)
+                    distance = (hi << 8) | lo
+
+                current_time = time.time()
+                # Logic: Check if distance is close, not the '20' error, and we aren't in cooldown
+                if 10 < distance <= 125 and distance != 20:
+                    consecutive_hits += 1
+                else:
+                    consecutive_hits = 0
+
+                if consecutive_hits >= 2 and current_time > self.boop_lockout_time:
+                    with self.queue_lock:
+                        # Only trigger if no animation is playing
+                        if not self.animation_mode_active and not self.is_booped:
+                            print("BOOP DETECTED!")
+                            self.pending_boop_trigger = True
+                    consecutive_hits = 0
+
+                time.sleep(0.1)
+
+            except Exception as e:
+                time.sleep(1)
+
     def _get_random_blink_interval(self) -> float:
         return random.uniform(4, 8)
+
+    def listen_bluetooth(self):
+        """Listens for incoming JSON commands via Bluetooth Serial"""
+        print(f"Bluetooth Thread: Waiting for {BT_SERIAL_PORT}...")
+
+        while not self.stop_event.is_set():
+            # 1. Check if the device file exists
+            if not os.path.exists(BT_SERIAL_PORT):
+                time.sleep(2)  # Wait silently until phone connects
+                continue
+
+            try:
+                # 2. Force permissions so Python can read it
+                # This fixes the 'Permission Denied' error automatically
+                os.system(f"sudo chmod 666 {BT_SERIAL_PORT}")
+
+                # 3. Open the serial port
+                with serial.Serial(BT_SERIAL_PORT, BT_BAUD_RATE, timeout=1) as ser:
+                    print(">>> BLUETOOTH DEVICE CONNECTED <<<")
+
+                    while not self.stop_event.is_set():
+                        if ser.in_waiting > 0:
+                            line = ser.readline().decode('utf-8').strip()
+                            if not line:
+                                continue
+
+                            try:
+                                new_commands = json.loads(line)
+
+                                # Handle both single dict and list of dicts
+                                if isinstance(new_commands, dict):
+                                    new_commands = [new_commands]
+
+                                with self.queue_lock:
+                                    # Prioritize Bluetooth: Put them at the front of the queue
+                                    # We use reversed() so the order remains correct when extending left
+                                    self.command_queue.extendleft(reversed(new_commands))
+
+                                print(f"BT Command Received: {len(new_commands)} items")
+
+                                # Optional: Force the processor to wake up immediately
+                                if self.timer:
+                                    self.timer.cancel()
+                                    self.process_command()
+
+                            except json.JSONDecodeError:
+                                print(f"BT Error: Received invalid JSON: {line}")
+
+                        time.sleep(0.1)  # Small sleep to prevent CPU spiking
+
+            except Exception as e:
+                # This triggers if the phone disconnects or the port is pulled
+                print(f"Bluetooth connection lost or error: {e}")
+                time.sleep(2)
+
+
+
+
 
     # ------------------------------------------------------
     # SAFE FACE LOADER (file I/O OUTSIDE LOCK ONLY)
@@ -397,6 +570,10 @@ class MyMatrixApp(SampleBase):
                         self.next_blink_time = time.time() + self._get_random_blink_interval()
                     else:
                         self.next_blink_time = float('inf')  # Never blink if no blink file is set
+
+                    if name != "Love_Eyes_Blink.json":
+                        self.save_eyes_name(name)
+
 
                 else:
                     self.current_mouth_grid = grid_data
@@ -566,6 +743,8 @@ class MyMatrixApp(SampleBase):
                 elif command_type == "5":
                     next_delay = 5
                     eye_map = {
+                        "1": "Happy_Eyes.json",
+                        "2": "Sad_Eyes.json",
                         "3": "Angry_Eyes.json",
                         "7": "Love_Eyes.json",
                         "12": "O_Eyes.json",
@@ -642,6 +821,26 @@ class MyMatrixApp(SampleBase):
                     lcd_insidescreen_controll("TB:OFF", "CommandOver")
                     self.blinkingtoggle = False
                     print("Stop Blinking")
+
+                elif command_type == "19":
+                    next_delay = 5
+                    if command_value == "1":
+                        self.booptoggle = not self.booptoggle
+                        if self.booptoggle:
+                            lcd_insidescreen_controll("BoopGo", "Boop")
+                            print("T-Activate Booping")
+                        else:
+                            lcd_insidescreen_controll("BoopDisabled", "Boop")
+                            print("T-Deactivate Booping")
+                    elif command_value == "2":
+                        lcd_insidescreen_controll("BoopGo", "Boop")
+                        print("Activate Booping")
+                        self.booptoggle = True
+                    else:
+                        lcd_insidescreen_controll("BoopDisabled", "Boop")
+                        print("Deactivate Booping")
+                        self.booptoggle = False
+
                 else:
                     next_delay = 5
                 # update fetch time when queue ends
@@ -696,12 +895,14 @@ class MyMatrixApp(SampleBase):
 
         canvas = self.matrix.CreateFrameCanvas()
 
-        # Variable to hold the mouth file name to load outside the lock
+        # Variable to hold the mouth/eye file names to load outside the lock
         mouth_file_to_load = None
+        eye_file_to_load = None
 
         while not self.stop_event.is_set():
             canvas.Clear()  # <-- Ensures a black background every frame
             current_time = time.time()
+            eye_file_to_load = None
 
             with self.queue_lock:
                 self.matrix.brightness = self.current_brightness
@@ -921,6 +1122,25 @@ class MyMatrixApp(SampleBase):
 
                     # default face
                     else:
+
+                        # --- BOOP LOGIC ---
+                        if self.pending_boop_trigger:
+                            self.is_booped = True
+                            self.pending_boop_trigger = False
+                            self.pre_boop_eyes = self.current_eyes_name
+                            self.boop_active_until = current_time + self.boop_duration
+                            self.boop_lockout_time = current_time + self.boop_duration + self.boop_cooldown
+                            eye_file_to_load = "Love_Eyes_Blink.json"
+                            print("Boop Active!")
+                            lcd_insidescreen_controll("BoopOn", "Boop")
+
+                        elif self.is_booped and current_time > self.boop_active_until:
+                            self.is_booped = False
+                            eye_file_to_load = self.pre_boop_eyes
+                            print("Boop Over, restoring eyes.")
+                            lcd_insidescreen_controll("BoopDff", "Boop")
+
+
                         # --- MOUTH LOGIC ---
                         new_mouth_name = self.current_mouth_name
                         mouth_file_to_load = None  # Reset for this frame
@@ -1000,8 +1220,11 @@ class MyMatrixApp(SampleBase):
             time.sleep(0.025)
 
             # -----------------------------------------------------
-            # DO THE MOUTH LOAD OUTSIDE THE LOCK
+            # DO THE MOUTH/EYE LOAD OUTSIDE THE LOCK
             # -----------------------------------------------------
+            if eye_file_to_load:
+                self.load_face_component("eyes", eye_file_to_load)
+
             if mouth_file_to_load:
                 self.load_face_component("mouth", mouth_file_to_load)
 
@@ -1010,6 +1233,33 @@ class MyMatrixApp(SampleBase):
         if self.timer:
             self.timer.cancel()
 
+    def load_saved_eyes_name(self):
+        """Tries to load the last eye name from disk, defaults to U_Eyes."""
+        default_eye = "U_Eyes.json"
+        try:
+            if os.path.exists(self.state_file):
+                with open(self.state_file, 'r') as f:
+                    data = json.load(f)
+                    # Check if data is actually a dictionary before calling .get()
+                    if isinstance(data, dict):
+                        return data.get("last_eyes", default_eye)
+                    else:
+                        print("State file format invalid, resetting to default.")
+        except Exception as e:
+            print(f"Error loading state: {e}")
+        return default_eye
+
+    def save_eyes_name(self, name):
+        """Saves the current eye name to disk and ensures file permissions."""
+        try:
+            with open(self.state_file, 'w') as f:
+                json.dump({"last_eyes": name}, f)
+
+            # This fixes the [Errno 13] for future runs
+            # by making the file readable/writable by everyone
+            os.chmod(self.state_file, 0o666)
+        except Exception as e:
+            print(f"Error saving state: {e}")
 
 # MAIN
 if __name__ == "__main__":
