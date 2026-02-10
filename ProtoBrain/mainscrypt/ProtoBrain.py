@@ -473,21 +473,17 @@ class MyMatrixApp(SampleBase):
         return random.uniform(4, 8)
 
     def listen_bluetooth(self):
-        """Listens for incoming JSON commands via Bluetooth Serial"""
+        """Listens for incoming JSON commands and sends a confirmation back"""
         print(f"Bluetooth Thread: Waiting for {BT_SERIAL_PORT}...")
 
         while not self.stop_event.is_set():
-            # 1. Check if the device file exists
             if not os.path.exists(BT_SERIAL_PORT):
-                time.sleep(2)  # Wait silently until phone connects
+                time.sleep(2)
                 continue
 
             try:
-                # 2. Force permissions so Python can read it
-                # This fixes the 'Permission Denied' error automatically
                 os.system(f"sudo chmod 666 {BT_SERIAL_PORT}")
 
-                # 3. Open the serial port
                 with serial.Serial(BT_SERIAL_PORT, BT_BAUD_RATE, timeout=1) as ser:
                     print(">>> BLUETOOTH DEVICE CONNECTED <<<")
 
@@ -499,30 +495,28 @@ class MyMatrixApp(SampleBase):
 
                             try:
                                 new_commands = json.loads(line)
-
-                                # Handle both single dict and list of dicts
                                 if isinstance(new_commands, dict):
                                     new_commands = [new_commands]
 
                                 with self.queue_lock:
-                                    # Prioritize Bluetooth: Put them at the front of the queue
-                                    # We use reversed() so the order remains correct when extending left
                                     self.command_queue.extendleft(reversed(new_commands))
 
-                                print(f"BT Command Received: {len(new_commands)} items")
+                                # --- NEW: SEND CONFIRMATION BACK ---
+                                response = {"status": "accepted", "count": len(new_commands)}
+                                ser.write((json.dumps(response) + "\n").encode('utf-8'))
+                                # -----------------------------------
 
-                                # Optional: Force the processor to wake up immediately
                                 if self.timer:
                                     self.timer.cancel()
                                     self.process_command()
 
                             except json.JSONDecodeError:
-                                print(f"BT Error: Received invalid JSON: {line}")
+                                # Send error message back if JSON is bad
+                                ser.write(b'{"status": "error", "message": "Invalid JSON"}\n')
 
-                        time.sleep(0.1)  # Small sleep to prevent CPU spiking
+                        time.sleep(0.1)
 
             except Exception as e:
-                # This triggers if the phone disconnects or the port is pulled
                 print(f"Bluetooth connection lost or error: {e}")
                 time.sleep(2)
 
@@ -674,6 +668,20 @@ class MyMatrixApp(SampleBase):
                         lcd_insidescreen_controll("SB:" + command_value, "CommandOver")
                     except:
                         pass
+
+                elif command_type == "3":
+                    #Restart
+                    if command_value == "1":
+                        print("Restarting System")
+                        try:
+                            lcd_insidescreen_controll("REBOOTING...", "CommandOver")
+                        except:
+                            pass
+
+                            # This triggers the Linux reboot command immediately
+                        os.system('sudo reboot')
+
+
 
                 elif command_type == "11":
                     # Run Animation
