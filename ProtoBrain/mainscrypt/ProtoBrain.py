@@ -13,6 +13,7 @@ import sys
 
 #bluetooth
 import serial
+import subprocess
 
 from typing import List, Dict, Any, Tuple
 from samplebase import SampleBase
@@ -142,6 +143,19 @@ def lcd_insidescreen_controll(message, typelcdupdate):
     # This lock prevents the Timer thread and Main thread from hitting the I2C bus simultaneously
     with lcd_lock:
         try:
+
+            if typelcdupdate != "Blink":
+
+                if message == "":
+                    app.send_bluetooth_message(typelcdupdate)
+                else:
+                    app.send_bluetooth_message(typelcdupdate + " " + message)
+
+
+
+        except Exception as BE:
+            print(f"General SendBluetooth Error: {BE}")
+        try:
             if typelcdupdate == "CommandOver":
                 lcd_message(message, LCD_LINE_2)
                 # Safe split check
@@ -202,11 +216,11 @@ def lcd_insidescreen_controll(message, typelcdupdate):
 
 
 
-        except OSError as e:
+        except OSError as BE:
             # Catch the specific I/O error (Errno 5) so the app doesn't crash
-            print(f"LCD I/O Error detected (ignoring): {e}")
-        except Exception as e:
-            print(f"General LCD Error: {e}")
+            print(f"LCD I/O Error detected (ignoring): {BE}")
+        except Exception as BE:
+            print(f"General LCD Error: {BE}")
 
 
 def lcd_insidescreen_controller_INT():
@@ -522,8 +536,6 @@ class MyMatrixApp(SampleBase):
 
 
 
-
-
     # ------------------------------------------------------
     # SAFE FACE LOADER (file I/O OUTSIDE LOCK ONLY)
     # ------------------------------------------------------
@@ -631,6 +643,7 @@ class MyMatrixApp(SampleBase):
             with self.queue_lock:
                 self.dvd_grid = []
             return False
+
 
     # ------------------------------------------------------
     # PROCESS COMMANDS
@@ -829,6 +842,21 @@ class MyMatrixApp(SampleBase):
                     lcd_insidescreen_controll("TB:OFF", "CommandOver")
                     self.blinkingtoggle = False
                     print("Stop Blinking")
+
+                elif command_type == "21":
+                    IP = "00:00:00:00"
+
+                    try:
+                        # This command grabs the IP address assigned to the Wi-Fi interface
+                        IP = subprocess.check_output(['hostname', '-I']).decode('utf-8').strip()
+                        if not IP:
+                            IP = "No Connection"
+                    except Exception:
+                        IP = "Error"
+
+
+                    lcd_insidescreen_controll(IP, "CommandOver")
+                    print(IP)
 
                 elif command_type == "19":
                     next_delay = 5
@@ -1161,8 +1189,8 @@ class MyMatrixApp(SampleBase):
 
                                 data = np.frombuffer(stream.read(CHUNK, exception_on_overflow=False), dtype=np.int16)
                                 volume = np.linalg.norm(data) / len(data)
-                            except:
-                                print("Error in reading mouth volume")
+                            except Exception as e:
+                                print(f"Error Mouth: {e}")
 
                             micebeforeVolume = self.mouthVolume;
 
@@ -1268,6 +1296,37 @@ class MyMatrixApp(SampleBase):
             os.chmod(self.state_file, 0o666)
         except Exception as e:
             print(f"Error saving state: {e}")
+
+    def send_bluetooth_message(self, message: str):
+        """
+        Sends a string to the connected Bluetooth device.
+        Includes safety checks for port existence and write stability.
+        """
+        # 1. Check if the device is even plugged in/bound
+        if not os.path.exists(BT_SERIAL_PORT):
+            # We don't print here to avoid flooding the console during every frame
+            return False
+
+        try:
+            # 2. Open with a short timeout so we don't hang the main loop
+            with serial.Serial(BT_SERIAL_PORT, BT_BAUD_RATE, timeout=0.5) as ser:
+                if ser.is_open:
+                    # 3. Ensure the message ends with a newline (standard for serial)
+                    if not message.endswith('\n'):
+                        message += '\n'
+
+                    # 4. Write data encoded as UTF-8
+                    ser.write(message.encode('utf-8'))
+                    ser.flush()  # Force the buffer to empty
+                    return True
+        except (serial.SerialException, OSError) as e:
+            # This catches "Device not configured" or "Permission denied"
+            print(f"BT Send Failed: {e}")
+        except Exception as e:
+            print(f"Unexpected BT Error: {e}")
+
+        return False
+
 
 # MAIN
 if __name__ == "__main__":
