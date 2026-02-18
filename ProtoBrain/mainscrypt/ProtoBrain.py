@@ -22,7 +22,7 @@ from rgbmatrix import RGBMatrixOptions, RGBMatrixOptions, graphics
 
 # AutoControll
 import pyaudio
-import numpy as np
+import numpy as npm
 
 # InsideScreen
 import smbus2
@@ -376,6 +376,8 @@ class MyMatrixApp(SampleBase):
         self.booptoggle = True
         self.mouthVolume = 10
         self.voicethreshhold = 4
+
+        self.autolinkmode = True
 
         self.blink_map = {
             "Tired_Eyes.json": "Tired_Blink.json",
@@ -857,6 +859,15 @@ class MyMatrixApp(SampleBase):
 
                     lcd_insidescreen_controll(IP, "CommandOver")
                     print(IP)
+                elif command_type == "22":
+                    self.autolinkmode = not self.autolinkmode
+                    if self.autolinkmode:
+                        lcd_insidescreen_controll("AD Active", "CommandOver")
+                    else:
+                        lcd_insidescreen_controll("AD Off", "CommandOver")
+
+
+
 
                 elif command_type == "19":
                     next_delay = 5
@@ -1195,6 +1206,11 @@ class MyMatrixApp(SampleBase):
                             micebeforeVolume = self.mouthVolume;
 
                             self.mouthVolume = volume
+                            if self.autolinkmode:
+                                # AUdiolink Logic
+                                print(f"AutolinkTrigger")
+                                print(f"mouthVolume")
+
 
                             if volume >= self.voicethreshhold and volume > 0:
                                 lcd_insidescreen_controll("MicON", "Mic")
@@ -1210,6 +1226,9 @@ class MyMatrixApp(SampleBase):
                         else:
                             new_mouth_name = "Mouth_Close.json"
                             self.ismouthopen = False
+
+
+
 
                         # Check if the desired mouth file is different from the currently loaded one
                         if self.current_mouth_name != new_mouth_name:
