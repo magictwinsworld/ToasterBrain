@@ -22,12 +22,13 @@ from rgbmatrix import RGBMatrixOptions, RGBMatrixOptions, graphics
 
 # AutoControll
 import pyaudio
-import numpy as npm
+import numpy as np
 
 # InsideScreen
 import smbus2
 import time
 
+import colorsys
 
 import contextlib
 
@@ -62,6 +63,9 @@ LCD_LINE_2 = 0xC0
 
 LCD_BACKLIGHT = 0x08
 ENABLE = 0b00000100
+
+last_lcd_init_time = 0
+lcd_needs_init = False
 
 # Audio Config
 CHUNK = 1024
@@ -141,11 +145,15 @@ def lcd_set_cursor(line, col):
 # --- UPDATED FUNCTION WITH LOCK AND ERROR HANDLING ---
 def lcd_insidescreen_controll(message, typelcdupdate):
     # This lock prevents the Timer thread and Main thread from hitting the I2C bus simultaneously
+    global lcd_needs_init, last_lcd_init_time
     with lcd_lock:
         try:
-
+            if lcd_needs_init and (time.time() - last_lcd_init_time > 5):
+                print("Attempting LCD Recovery...")
+                lcd_init()
+                lcd_insidescreen_controller_INT()  # Restore your B90FU... layout
+                lcd_needs_init = False
             if typelcdupdate != "Blink":
-
                 if message == "":
                     app.send_bluetooth_message(typelcdupdate)
                 else:
@@ -213,12 +221,12 @@ def lcd_insidescreen_controll(message, typelcdupdate):
                     lcd_display_string("X")
                 else:
                     lcd_display_string("-")
-
-
-
         except OSError as BE:
-            # Catch the specific I/O error (Errno 5) so the app doesn't crash
-            print(f"LCD I/O Error detected (ignoring): {BE}")
+            if not lcd_needs_init:
+                print("LCD Disconnected/I2C Error. Waiting for reconnection...")
+                lcd_needs_init = True
+                last_lcd_init_time = time.time()
+
         except Exception as BE:
             print(f"General LCD Error: {BE}")
 
@@ -261,6 +269,36 @@ except:
     print("USB microphone not found!")
 
 print("Listening...")
+
+
+def shift_hue(hex_color, shift_amount=0.01):
+    """
+    Shifts the hue of a HEX color string in a circle.
+    :param hex_color: String like "#00FFFF"
+    :param shift_amount: Float between 0.0 and 1.0 (0.01 is a 'tiny bit')
+    :return: Updated HEX string
+    """
+    # 1. Clean the HEX string and convert to RGB (0-1 scale)
+    hex_color = hex_color.lstrip('#')
+    r, g, b = (int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+    # 2. Convert RGB to HLS (Hue, Lightness, Saturation)
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+
+    # 3. Apply the shift and use modulo (%) to keep it in a 0.0-1.0 circle
+    new_h = (h + shift_amount) % 1.0
+
+    # 4. Convert back to RGB
+    new_r, new_g, new_b = colorsys.hls_to_rgb(new_h, l, s)
+
+    # 5. Format back into a HEX string
+    return "#{:02X}{:02X}{:02X}".format(
+        int(round(new_r * 255)),
+        int(round(new_g * 255)),
+        int(round(new_b * 255))
+    )
+
+
 
 # --- CONFIGURATION ---
 QUEUE_URL = "https://magictwin.net/proto/Data/Public-Queue?key=ToasterControl_LockedData30590325246954"
@@ -377,7 +415,8 @@ class MyMatrixApp(SampleBase):
         self.mouthVolume = 10
         self.voicethreshhold = 4
 
-        self.autolinkmode = True
+        self.audiolinkmode = False
+        self.audiolinkmaxvoulme = 5
 
         self.blink_map = {
             "Tired_Eyes.json": "Tired_Blink.json",
@@ -413,6 +452,12 @@ class MyMatrixApp(SampleBase):
         self.load_face_component("eyes", self.current_eyes_name)
         self.load_face_component("mouth", self.current_mouth_name)
 
+
+        #Offset
+        self.face_offset_x = 0
+        self.face_offset_y = 0
+
+
         # font
         self.font = graphics.Font()
         try:
@@ -432,12 +477,14 @@ class MyMatrixApp(SampleBase):
 
         # Boop Logic Variables
         self.boop_lockout_time = 0  # Timestamp for when we can boop again
-        self.boop_duration = 3.0  # How long heart eyes stay (seconds)
+        self.boop_duration = 1.0  # How long heart eyes stay (seconds)
         self.boop_cooldown = 2.0  # Cooldown before next boop (seconds)
         self.boop_active_until = 0  # Timestamp for when heart eyes revert
         self.is_booped = False
         self.pending_boop_trigger = False # Flag to signal main loop
         self.pre_boop_eyes = "U_Eyes.json" # Memory of eye state before boop
+        self.sensor_is_currently_booped = False
+
 
         # Start Boop Thread
         self.boop_thread = threading.Thread(target=self.monitor_boop_sensor, daemon=True)
@@ -471,6 +518,8 @@ class MyMatrixApp(SampleBase):
                     consecutive_hits += 1
                 else:
                     consecutive_hits = 0
+
+                self.sensor_is_currently_booped = (consecutive_hits >= 2)
 
                 if consecutive_hits >= 2 and current_time > self.boop_lockout_time:
                     with self.queue_lock:
@@ -590,8 +639,8 @@ class MyMatrixApp(SampleBase):
             print(f"Loaded {component_type}: {name}")
             return True
 
-        except Exception as e:
-            print(f"Failed loading {file_path} or associated blink file: {e}")
+        except Exception as File_e:
+            print(f"Failed loading {file_path} or associated blink file: {File_e}")
             return False
 
     # ------------------------------------------------------
@@ -726,18 +775,12 @@ class MyMatrixApp(SampleBase):
                         self.dvd_dy = random.choice([-1, 1])
                         self.dvd_color_index = random.randint(0, len(self.dvd_colors) - 1)
 
-                        # IMPORTANT: We DO NOT set self.animation_mode_active = True here.
-                        # It will be set in load_animation_component once the asset is ready.
-
                     elif command_value == "3":
                         lcd_insidescreen_controll("RA:Boot", "CommandOver")
                         # Default wipe animation loads instantly, so we can activate it here
                         self.animation_mode_active = True
                         self.animation_start_time = time.time()
                         self.animation_end_time = time.time() + duration
-
-                    # If it's type 4, the end time is calculated in load_animation_component
-                    # If it's type 3, it's already calculated above.
 
                     print(f"Starting animation: {command_value} for {duration} seconds (Pending asset load if type 4).")
 
@@ -860,11 +903,15 @@ class MyMatrixApp(SampleBase):
                     lcd_insidescreen_controll(IP, "CommandOver")
                     print(IP)
                 elif command_type == "22":
-                    self.autolinkmode = not self.autolinkmode
-                    if self.autolinkmode:
+                    self.audiolinkmode = not self.audiolinkmode
+                    if self.audiolinkmode:
                         lcd_insidescreen_controll("AD Active", "CommandOver")
                     else:
                         lcd_insidescreen_controll("AD Off", "CommandOver")
+
+                elif command_type == "23":
+                    self.audiolinkmaxvoulme = int(command_value)
+                    lcd_insidescreen_controll("Set Maxvolume", "CommandOver")
 
 
 
@@ -1170,22 +1217,28 @@ class MyMatrixApp(SampleBase):
                     # default face
                     else:
 
-                        # --- BOOP LOGIC ---
-                        if self.pending_boop_trigger:
-                            self.is_booped = True
-                            self.pending_boop_trigger = False
-                            self.pre_boop_eyes = self.current_eyes_name
-                            self.boop_active_until = current_time + self.boop_duration
-                            self.boop_lockout_time = current_time + self.boop_duration + self.boop_cooldown
-                            eye_file_to_load = "Love_Eyes_Blink.json"
-                            print("Boop Active!")
-                            lcd_insidescreen_controll("BoopOn", "Boop")
+                        # --- BOOP LOGIC (Sticky with Cooldown) ---
+                        if self.booptoggle:
+                            current_time = time.time()
 
-                        elif self.is_booped and current_time > self.boop_active_until:
-                            self.is_booped = False
-                            eye_file_to_load = self.pre_boop_eyes
-                            print("Boop Over, restoring eyes.")
-                            lcd_insidescreen_controll("BoopDff", "Boop")
+                            # 1. TRIGGER: Hand detected and we aren't in cooldown
+                            if self.sensor_is_currently_booped and current_time > self.boop_lockout_time:
+                                if not self.is_booped:
+                                    self.is_booped = True
+                                    self.pre_boop_eyes = self.current_eyes_name
+                                    eye_file_to_load = "Love_Eyes_Blink.json"
+                                    lcd_insidescreen_controll("BoopOn", "Boop")
+
+                                # While hand is present, constantly push the end time forward
+                                self.boop_active_until = current_time + self.boop_duration
+
+                            # 2. RELEASE: Hand is gone, and the sticky timer has finally run out
+                            elif self.is_booped and current_time > self.boop_active_until:
+                                self.is_booped = False
+                                # Set the lockout starting NOW for the cooldown period
+                                self.boop_lockout_time = current_time + self.boop_cooldown
+                                eye_file_to_load = self.pre_boop_eyes
+                                lcd_insidescreen_controll("BoopOff", "Boop")
 
 
                         # --- MOUTH LOGIC ---
@@ -1203,18 +1256,32 @@ class MyMatrixApp(SampleBase):
                             except Exception as e:
                                 print(f"Error Mouth: {e}")
 
-                            micebeforeVolume = self.mouthVolume;
+                            micebeforeVolume = self.mouthVolume
 
                             self.mouthVolume = volume
-                            if self.autolinkmode:
-                                # AUdiolink Logic
-                                print(f"AutolinkTrigger")
-                                print(f"mouthVolume")
+                            if self.audiolinkmode:
+                                # Audiolink Logic
+                                CallCulatedBrightniss = 100 / self.audiolinkmaxvoulme * volume
 
+                                if CallCulatedBrightniss > 100:
+                                    CallCulatedBrightniss = 100
+                                if CallCulatedBrightniss < 20:
+                                    CallCulatedBrightniss = 20
 
+                                self.current_brightness = CallCulatedBrightniss
+
+                                StartColor = "#0000ff"
+                                HueshiftCOlor = self.current_color
+                                HueshiftCOlor = shift_hue(HueshiftCOlor, 0.05)
+                                self.current_color = HueshiftCOlor
+
+                                #print(f"Volume: {volume:.4f}")
+                                #print(f"Brightness: {self.current_brightness:.4f}")
+                                #print(f"Color: {self.current_color}")
                             if volume >= self.voicethreshhold and volume > 0:
-                                lcd_insidescreen_controll("MicON", "Mic")
-                                print(f"Volume: {volume:.4f}")
+                                if not self.audiolinkmode:
+                                    lcd_insidescreen_controll("MicON", "Mic")
+                                    print(f"Volume: {volume:.4f}")
                             else:
                                 self.mouthVolume = 0
                                 if micebeforeVolume > 0:
@@ -1264,10 +1331,17 @@ class MyMatrixApp(SampleBase):
                                 row_m = self.current_mouth_grid[r_i]
                                 w = min(len(row_e), len(row_m))
                                 for c_i in range(w):
-                                    # Use the *currently loaded* mouth grid for drawing
+                                    # Find this section in your run() method:
                                     if row_e[c_i] or row_m[c_i]:
-                                        # Correctly set pixel using c_i (x) and r_i (y)
-                                        canvas.SetPixel(c_i, r_i, r_full, g_full, b_full)
+                                        # Apply the offsets here
+                                        draw_x = c_i + self.face_offset_x
+                                        draw_y = r_i + self.face_offset_y
+
+                                        # Safety check to ensure we don't draw outside matrix bounds
+                                        if 0 <= draw_x < W and 0 <= draw_y < H:
+                                            canvas.SetPixel(draw_x, draw_y, r_full, g_full, b_full)
+
+
                         else:
                             canvas.Fill(r_full, g_full, b_full)
 
@@ -1282,6 +1356,20 @@ class MyMatrixApp(SampleBase):
 
             if mouth_file_to_load:
                 self.load_face_component("mouth", mouth_file_to_load)
+
+            # --- RANDOM FACE SHIFT ---
+            # Only shift occasionally to look like natural micro-movements
+            if False:
+                if random.random() < 0.10 or False:
+                    # Move by -1, 0, or 1
+                    self.face_offset_x = random.choice([-1, 0, 1])
+                    self.face_offset_y = random.choice([-1, 0, 1])
+
+                    # Optional: Keep the face from drifting too far from center
+                    # This clamps the offset so it stays within a 1-pixel radius
+                    self.face_offset_x = max(-1, min(1, self.face_offset_x))
+                    self.face_offset_y = max(-1, min(1, self.face_offset_y))
+
 
     def __del__(self):
         self.stop_event.set()
