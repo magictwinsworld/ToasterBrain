@@ -5,6 +5,8 @@ import collections
 import sys
 import threading
 import json
+from operator import truediv
+
 import requests
 import time
 import traceback
@@ -377,6 +379,16 @@ class MyMatrixApp(SampleBase):
         self.custom_grid = []
         self.grid_end_time = 0
 
+        # Target position the eyes WANT to be at
+        self.target_offset_x = 0
+        self.target_offset_y = 0
+        # Current actual position (float for smooth math)
+        self.current_offset_x = 0.0
+        self.current_offset_y = 0.0
+        # How fast they move (0.05 = slow, 0.2 = fast)
+        self.lerp_speed = 0.1
+
+
         # Animation mode - Start Wipe Animation (Type 3) on boot
         self.animation_mode_active = True
         self.animation_start_time = time.time()
@@ -423,7 +435,7 @@ class MyMatrixApp(SampleBase):
             "Angry_Eyes.json": "Angry_Blink.json",
             "Happy_Eyes.json": "Happy_Blink.json",
             "Sad_Eyes.json": "Sad_Blink.json",
-            "Love_Eyes.json": "NoBlink",
+            "Love_Eyes.json": "Love_Blink.json",
             "Love_Eyes_Blink.json": "NoBlink",
             "O_Eyes.json": "NoBlink",
             "U_Eyes.json": "NoBlink",
@@ -439,11 +451,18 @@ class MyMatrixApp(SampleBase):
         self.eyes_dir = os.path.normpath(os.path.join(base_dir, "..", "Faces", "Eyes"))
         self.mouth_dir = os.path.normpath(os.path.join(base_dir, "..", "Faces", "Mouth"))
         self.blink_dir = os.path.normpath(os.path.join(base_dir, "..", "Faces", "Blink"))
+        self.nose_dir = os.path.normpath(os.path.join(base_dir, "..", "Faces", "Nose"))
+
+        # Initial load
+
+
         # New animation directory for DVD.json
         self.animation_dir = os.path.normpath(os.path.join(base_dir, "..", "Faces", "Animation"))
 
+        self.current_nose_grid = []
         self.current_eyes_grid = []
         self.current_mouth_grid = []
+        self.current_nose_name = "Nose.json"
         self.current_eyes_name = self.load_saved_eyes_name()
         self.current_mouth_name = "Mouth_Close.json"
         self.current_mouth_open_name = "Mouth_Open.json"  # Storing the open mouth file name
@@ -451,7 +470,7 @@ class MyMatrixApp(SampleBase):
         # initial loads (safe)
         self.load_face_component("eyes", self.current_eyes_name)
         self.load_face_component("mouth", self.current_mouth_name)
-
+        self.load_face_component("nose", self.current_nose_name)
 
         #Offset
         self.face_offset_x = 0
@@ -528,7 +547,6 @@ class MyMatrixApp(SampleBase):
                             print("BOOP DETECTED!")
                             self.pending_boop_trigger = True
                     consecutive_hits = 0
-
                 time.sleep(0.1)
 
             except Exception as e:
@@ -595,6 +613,8 @@ class MyMatrixApp(SampleBase):
             directory = self.eyes_dir
         elif component_type == "mouth":
             directory = self.mouth_dir
+        elif component_type == "nose":
+            directory = self.nose_dir
         else:
             return False
 
@@ -631,10 +651,15 @@ class MyMatrixApp(SampleBase):
                     if name != "Love_Eyes_Blink.json":
                         self.save_eyes_name(name)
 
+                elif component_type == "nose":  # Add this
+                    self.current_nose_grid = grid_data
 
-                else:
+                elif component_type == "mouth":
                     self.current_mouth_grid = grid_data
                     self.current_mouth_name = name  # Keep track of the currently loaded mouth name
+                else:
+                    print(f"Unknown Component Type: {component_type}")
+                    return False
 
             print(f"Loaded {component_type}: {name}")
             return True
@@ -1122,6 +1147,7 @@ class MyMatrixApp(SampleBase):
 
                         current_eyes_grid = self.current_eyes_grid
                         current_mouth_grid = self.current_mouth_grid
+                        current_nose_grid = self.current_nose_grid
 
                         # Phase 1: Wipe In (0.0 <= progress <= 0.5) - Lines move to center (1-pixel thick)
                         if progress <= 0.5:
@@ -1145,44 +1171,48 @@ class MyMatrixApp(SampleBase):
 
                         # Phase 2: Wipe Out / Reveal (0.5 < progress < 1.0) - Lines move outwards, revealing face
                         else:
-                            # t ranges from 0 (start of phase) to 1 (end of animation)
                             t = (progress - 0.5) * 2.0
-
-                            # Center positions (e.g., 15 and 16 for 32-wide)
                             center_left = W // 2 - 1
                             center_right = W // 2
 
-                            # Calculate line positions moving from center outward
-                            # Left line moves from center_left -> 0
                             x_left = int(center_left * (1.0 - t))
-                            # Right line moves from center_right -> W-1
                             x_right = int(center_right + t * (W - 1 - center_right))
 
                             # 1) Draw the two 1-pixel-thick wipe lines
                             for y in range(H):
-                                # x_left and x_right are guaranteed to be within [0, W-1] when moving between phases
                                 if 0 <= x_left < W:
                                     canvas.SetPixel(x_left, y, r_full, g_full, b_full)
                                 if 0 <= x_right < W:
                                     canvas.SetPixel(x_right, y, r_full, g_full, b_full)
 
-                            # 2) Incrementally reveal the face **only** in columns BETWEEN the two lines
-                            # Columns: x_left + 1 .. x_right - 1
-                            if current_eyes_grid and self.current_mouth_grid:  # Use self.current_mouth_grid for consistency
-                                grid_h = min(len(current_eyes_grid), len(self.current_mouth_grid))
-                                for r_i in range(grid_h):
-                                    row_e = current_eyes_grid[r_i]
-                                    row_m = self.current_mouth_grid[r_i]
-                                    grid_w = min(len(row_e), len(row_m))
+                            # 2) Reveal face components BETWEEN the two lines
+                            # We draw Eyes, Mouth, and Nose if they fall within the revealed area
 
-                                    for c_i in range(grid_w):
-                                        is_face_pixel = row_e[c_i] or row_m[c_i]
+                            # Draw Eyes (with offset if you want them offset during animation)
+                            if current_eyes_grid:
+                                for r_i, row in enumerate(current_eyes_grid):
+                                    for c_i, val in enumerate(row):
+                                        draw_x = c_i + self.face_offset_x
+                                        draw_y = r_i + self.face_offset_y
+                                        if val and x_left < draw_x < x_right:
+                                            if 0 <= draw_x < W and 0 <= draw_y < H:
+                                                canvas.SetPixel(draw_x, draw_y, r_full, g_full, b_full)
 
-                                        # REVEAL pixels BETWEEN the two lines
-                                        if is_face_pixel and c_i > x_left and c_i < x_right:
-                                            # Correctly set pixel using c_i (x) and r_i (y)
-                                            canvas.SetPixel(c_i, r_i, r_full, g_full, b_full)
+                            # Draw Mouth (stationary)
+                            if self.current_mouth_grid:
+                                for r_i, row in enumerate(self.current_mouth_grid):
+                                    for c_i, val in enumerate(row):
+                                        if val and x_left < c_i < x_right:
+                                            if 0 <= c_i < W and 0 <= r_i < H:
+                                                canvas.SetPixel(c_i, r_i, r_full, g_full, b_full)
 
+                            # Draw Nose (stationary) - ADDED THIS
+                            if self.current_nose_grid:
+                                for r_i, row in enumerate(self.current_nose_grid):
+                                    for c_i, val in enumerate(row):
+                                        if val and x_left < c_i < x_right:
+                                            if 0 <= c_i < W and 0 <= r_i < H:
+                                                canvas.SetPixel(c_i, r_i, r_full, g_full, b_full)
                     else:
                         # other animation types can be implemented here; for unknown types do nothing
                         pass
@@ -1301,7 +1331,7 @@ class MyMatrixApp(SampleBase):
                         if self.current_mouth_name != new_mouth_name:
                             mouth_file_to_load = new_mouth_name  # Signal to load outside the lock
 
-                        # --- BLINKING LOGIC (unmodified) ---
+                        # --- BLINKING LOGIC ---
                         eyes_grid_to_draw = self.current_eyes_grid
 
                         if self.blinkingtoggle and self.current_blink_grid:
@@ -1324,23 +1354,31 @@ class MyMatrixApp(SampleBase):
                             eyes_grid_to_draw = self.current_blink_grid
 
                         # --- DRAW THE SELECTED FACE ---
-                        if eyes_grid_to_draw and self.current_mouth_grid:
-                            h = min(len(eyes_grid_to_draw), len(self.current_mouth_grid))
-                            for r_i in range(h):
-                                row_e = eyes_grid_to_draw[r_i]
-                                row_m = self.current_mouth_grid[r_i]
-                                w = min(len(row_e), len(row_m))
-                                for c_i in range(w):
-                                    # Find this section in your run() method:
-                                    if row_e[c_i] or row_m[c_i]:
-                                        # Apply the offsets here
+                        # 1. Draw Eyes (ONLY these use the offset)
+                        if eyes_grid_to_draw:
+                            for r_i, row in enumerate(eyes_grid_to_draw):
+                                for c_i, val in enumerate(row):
+                                    if val:
                                         draw_x = c_i + self.face_offset_x
                                         draw_y = r_i + self.face_offset_y
-
-                                        # Safety check to ensure we don't draw outside matrix bounds
                                         if 0 <= draw_x < W and 0 <= draw_y < H:
                                             canvas.SetPixel(draw_x, draw_y, r_full, g_full, b_full)
 
+                        # 2. Draw Mouth (Stationary)
+                        if self.current_mouth_grid:
+                            for r_i, row in enumerate(self.current_mouth_grid):
+                                for c_i, val in enumerate(row):
+                                    if val:
+                                        if 0 <= c_i < W and 0 <= r_i < H:
+                                            canvas.SetPixel(c_i, r_i, r_full, g_full, b_full)
+
+                        # 3. Draw Nose (Stationary)
+                        if self.current_nose_grid:
+                            for r_i, row in enumerate(self.current_nose_grid):
+                                for c_i, val in enumerate(row):
+                                    if val:
+                                        if 0 <= c_i < W and 0 <= r_i < H:
+                                            canvas.SetPixel(c_i, r_i, r_full, g_full, b_full)
 
                         else:
                             canvas.Fill(r_full, g_full, b_full)
@@ -1359,17 +1397,23 @@ class MyMatrixApp(SampleBase):
 
             # --- RANDOM FACE SHIFT ---
             # Only shift occasionally to look like natural micro-movements
-            if False:
-                if random.random() < 0.10 or False:
-                    # Move by -1, 0, or 1
-                    self.face_offset_x = random.choice([-1, 0, 1])
-                    self.face_offset_y = random.choice([-1, 0, 1])
 
-                    # Optional: Keep the face from drifting too far from center
-                    # This clamps the offset so it stays within a 1-pixel radius
-                    self.face_offset_x = max(-1, min(1, self.face_offset_x))
-                    self.face_offset_y = max(-1, min(1, self.face_offset_y))
+            # 1. Occasionally pick a new target (keep this inside the while loop)
+            if random.random() < 0.1:  # Lower frequency so they "linger" at a look point
+                self.target_offset_x = random.choice([-2, -1, 0, 1, 2])
+                self.target_offset_y = random.choice([-1, 0, 1])  # Eyes usually move less vertically
 
+            # 2. Smoothly slide toward target (Linear Interpolation)
+            # Run this every frame regardless of the random check
+            dx = self.target_offset_x - self.current_offset_x
+            dy = self.target_offset_y - self.current_offset_y
+
+            self.current_offset_x += dx * self.lerp_speed
+            self.current_offset_y += dy * self.lerp_speed
+
+            # 3. For the actual SetPixel calls, use the rounded integer versions
+            self.face_offset_x = int(round(self.current_offset_x))
+            self.face_offset_y = int(round(self.current_offset_y))
 
     def __del__(self):
         self.stop_event.set()
