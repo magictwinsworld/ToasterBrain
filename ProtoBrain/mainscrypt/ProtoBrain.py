@@ -440,6 +440,7 @@ class MyMatrixApp(SampleBase):
             "O_Eyes.json": "NoBlink",
             "U_Eyes.json": "NoBlink",
             "X_Eyes.json": "NoBlink",
+            "Music_Eyes.json": "NoBlink",
         }
         self.current_blink_grid = []
         self.is_blinking = False
@@ -842,6 +843,7 @@ class MyMatrixApp(SampleBase):
                         "13": "U_Eyes.json",
                         "14": "X_Eyes.json",
                         "15": "Tired_Eyes.json",
+                        "16": "Music_Eyes.json",
                     }
                     new_eye_file = eye_map.get(command_value)
                     if new_eye_file:
@@ -1399,7 +1401,7 @@ class MyMatrixApp(SampleBase):
             # Only shift occasionally to look like natural micro-movements
 
             # 1. Occasionally pick a new target (keep this inside the while loop)
-            if random.random() < 0.1:  # Lower frequency so they "linger" at a look point
+            if random.random() < 0.3:  # Lower frequency so they "linger" at a look point
                 self.target_offset_x = random.choice([-2, -1, 0, 1, 2])
                 self.target_offset_y = random.choice([-1, 0, 1])  # Eyes usually move less vertically
 
