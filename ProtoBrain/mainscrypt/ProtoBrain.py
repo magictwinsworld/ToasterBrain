@@ -303,8 +303,23 @@ def shift_hue(hex_color, shift_amount=0.01):
 
 
 # --- CONFIGURATION ---
-QUEUE_URL = "https://magictwin.net/proto/Data/Public-Queue?key=ToasterControl_LockedData30590325246954"
-QUEUE_URL = QUEUE_URL + "&istwinpi=1"
+QUEUE_URL_BASE = "https://magictwin.net/proto/Data/Public-Queue"
+
+def load_secret_key():
+    """Loads the API key from a local text file."""
+    key_file = os.path.join(os.path.abspath(os.path.dirname(__file__)), "key.txt")
+    try:
+        with open(key_file, "r") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        print("ERROR: key.txt not found! Please create it with your secret key.")
+        return "MISSING_KEY"
+
+# Load the key and build the URL
+KEY = load_secret_key()
+QUEUE_URL = f"{QUEUE_URL_BASE}?key={KEY}&istwinpi=1"
+
+
 
 MarkeAllisDOne = 1
 if MarkeAllisDOne:

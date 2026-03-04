@@ -1,0 +1,7 @@
+key.txt
+last_state.json
+__pycache__/
+*.pyc
+/.venv/
+/rpi-rgb-led-matrix/
+/ProtoBrain/mainscrypt/key.txt
