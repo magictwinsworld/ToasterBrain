@@ -1,7 +1,12 @@
 # ToasterBrain
 
-ToasterBrain is a Python-based control system for Raspberry Pi-powered robotic faces and smart displays. It features a reactive facial system with eyes, mouth, and nose components, real-time audio reactivity, I2C secondary displays, and remote command execution via Bluetooth and Web APIs.
+ToasterBrain is a Python-based control system for Raspberry Pi-powered protogen fursuit. It features a reactive facial system with eyes, mouth, and nose components, real-time audio reactivity, I2C secondary displays, and remote command execution via Bluetooth and Web APIs.
 
+This system uses this libary.
+https://github.com/hzeller/rpi-rgb-led-matrix
+
+Heavely inspired by the WafflesDoesArt series
+https://www.youtube.com/playlist?list=PLguU2gUSfI7ns94YH2fXrQyaipfVsL3ai
 ---
 
 ## Features
@@ -17,7 +22,6 @@ ToasterBrain is a Python-based control system for Raspberry Pi-powered robotic f
 * **Connectivity**: 
     * **Bluetooth Serial**: Remote control via mobile app or serial terminal.
     * **Web Queue**: Synchronized command polling from a remote API.
-* **Special Animations**: Boot-up wipe reveal and a classic "DVD Logo" bounce mode.
 
 ---
 
