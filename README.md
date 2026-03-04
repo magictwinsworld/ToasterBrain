@@ -26,6 +26,17 @@ https://www.youtube.com/playlist?list=PLguU2gUSfI7ns94YH2fXrQyaipfVsL3ai
 
 ---
 
+## The Face format
+
+The system loads the face in three parts. Eyes, Mouth, and Nose.
+It does this so it can modify each individually without the need of making multiple faces.
+(For example, for blinking or speaking)
+
+The parts are stored in a JSON format. I made a simple web editor. For this.
+https://magictwin.net/proto/FaceMaker
+
+
+
 ## Hardware Setup
 
 The project relies on the following I2C addresses and connections:
