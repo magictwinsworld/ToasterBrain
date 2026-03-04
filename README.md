@@ -43,35 +43,34 @@ The project relies on the following I2C addresses and connections:
    cd ToasterBrain
 
    sudo raspi-config nonint do_i2c 0
-sudo raspi-config nonint do_serial_hw 0
+   sudo raspi-config nonint do_serial_hw 0
 
-sudo apt-get update
-sudo apt-get install -y git python3-dev python3-pip python3-numpy \
-libasound2-dev libjack-jackd2-dev portaudio19-dev \
-libgraphicsmagick++-dev libwebp-dev htop
+   sudo apt-get update
+   sudo apt-get install -y git python3-dev python3-pip python3-numpy \
+   libasound2-dev libjack-jackd2-dev portaudio19-dev \
+   libgraphicsmagick++-dev libwebp-dev htop
 
-# Clone the repository
-git clone https://github.com/hzeller/rpi-rgb-led-matrix.git
-cd rpi-rgb-led-matrix
+   git clone https://github.com/hzeller/rpi-rgb-led-matrix.git
+   cd rpi-rgb-led-matrix
 
-# Build the core library
-make -C lib
+   Build the core library
+   make -C lib
 
-# Build and install Python bindings
-cd bindings/python
-make install
-sudo python3 setup.py install
-cd ../../../
+   Build and install Python bindings
+   cd bindings/python
+   make install
+   sudo python3 setup.py install
+   cd ../../../
 
-sudo pip3 install requests smbus2 pyserial pyaudio numpy --break-system-packages
+   sudo pip3 install requests smbus2 pyserial pyaudio numpy --break-system-packages
 
-# Edit the bluetooth service to run in compatibility mode
-sudo sed -i 's|^ExecStart=.*|ExecStart=/usr/lib/bluetooth/bluetoothd -C|' /lib/systemd/system/bluetooth.service
-sudo systemctl daemon-reload
-sudo systemctl restart bluetooth
+   Edit the bluetooth service to run in compatibility mode
+   sudo sed -i 's|^ExecStart=.*|ExecStart=/usr/lib/bluetooth/bluetoothd -C|' /lib/systemd/system/bluetooth.service
+   sudo systemctl daemon-reload
+   sudo systemctl restart bluetooth
 
-# Set up the Serial Port Profile (run this or add to rc.local)
-sudo sdptool add SP
+   Set up the Serial Port Profile (run this or add to rc.local)
+   sudo sdptool add SP
 
-sudo usermod -a -G audio $USER
-sudo python3 my_app.py --led-rows=32 --led-cols=64 --led-slowdown-gpio=4
+   sudo usermod -a -G audio $USER
+   sudo python3 my_app.py --led-rows=32 --led-cols=64 --led-slowdown-gpio=4
