@@ -85,3 +85,6 @@ The project relies on the following I2C addresses and connections:
 
    sudo usermod -a -G audio $USER
    sudo python3 my_app.py --led-rows=32 --led-cols=64 --led-slowdown-gpio=4
+
+
+   sudo python3 ProtoBrain/mainscrypt/ProtoBrain.py --led-rows=32 --led-cols=128 --led-slowdown-gpio=3 --led-chain=1 --led-gpio-mapping=adafruit-hat
